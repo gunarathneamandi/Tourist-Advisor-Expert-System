@@ -48,7 +48,7 @@ class Recommendation(Fact):
 
 class ItineraryEngine(KnowledgeEngine):
 
-    @DefFacts
+    @DefFacts()
     def _initial_knowledge(self):
         #location data
         yield Location(name="Sigiriya", type='history', region='cultural_triangle')
@@ -79,12 +79,12 @@ class ItineraryEngine(KnowledgeEngine):
     @Rule(
         
         UserRequest(month=MATCH.month, interests=MATCH.interests),
-        Weather(bad_region=MATCH.bad_region, month=MATCH.month),
+        Weather(bad_region=MATCH.region, month=MATCH.month),
         TEST(lambda interests: 'beach' in interests),
         salience=100,
     )
 
-    def determine_bad_weather_region(self, region):
+    def determine_bad_weather_region(self, month, interests, region):
         """
         If the user wants beaches during a monsoon,
         flag the monsoon-affected region as "avoid".
@@ -189,45 +189,46 @@ class ItineraryEngine(KnowledgeEngine):
         if not any(isinstance(f, Warning) and "many stops" in f.get('message') for f in self.facts.values()):
             self.declare(Warning(message="Plan has many stops for a short trip. Consider focusing on one region."))
 
-    def get_itinerary(self):
-        """
-        A helper function to run the expert system.
-        """
+def get_itinerary(duration, month, interests):
+    """
+    A helper function to run the expert system.
+    """
 
-        engine = ItineraryEngine()
-        engine.reset()
+    engine = ItineraryEngine()
+    engine.reset()
 
-        engine.declare(UserRequest(duration=duration, month=month.lower(), interests=interests))
+    engine.declare(UserRequest(duration=duration, month=month.lower(), interests=interests))
 
-        engine.run()
+    engine.run()
 
-        print("---" * 10)
-        print("Generating Iterary Recommendations for:")
-        print(f"   Duration: {duration} days")
-        print(f"   Month: {month.capitalize()}")
-        print(f"   Interests: {', '.join(interests)}")
-        print("---" * 10)
+    print("---" * 10)
+    print("Generating Iterary Recommendations for:")
+    print(f"   Duration: {duration} days")
+    print(f"   Month: {month.capitalize()}")
+    print(f"   Interests: {', '.join(interests)}")
+    print("---" * 10)
 
-        print("\n Warnings:")
-        warnings = [f.get('message') for f in engine.facts.values() if isinstance(f, Warning)]
-        if warnings:
-            for w in set(warnings):
-                print(f"  - {w}")
-        else:
-            print("  - No conflicts found. Plan looks good!")
+    print("\n Warnings:")
+    warnings = [f.get('message') for f in engine.facts.values() if isinstance(f, Warning)]
+    if warnings:
+        for w in set(warnings):
+            print(f"  - {w}")
+    else:
+        print("  - No conflicts found. Plan looks good!")
 
-        print("\n Recommended Itinerary Items:")
-        items = [f for f in engine.facts.values() if isinstance(f, ItineraryItem)]
-        if items:
+    print("\n Recommended Itinerary Items:")
+    items = [f for f in engine.facts.values() if isinstance(f, ItineraryItem)]
+    if items:
            
-            unique_locations = {i.get('location'): i for i in items}
-            for i in unique_locations.values():
-                print(f"   - Location: {i.get('location'):<15} | Reason: {i.get('reason')}")
-        else:
-            print("   - No itinerary items could be generated for these preferences.")
+        unique_locations = {i.get('location'): i for i in items}
+        for i in unique_locations.values():
+            print(f"   - Location: {i.get('location'):<15} | Reason: {i.get('reason')}")
+    else:
+        print("   - No itinerary items could be generated for these preferences.")
         
-        print("---" * 10)
+    print("---" * 10)
 
+        
 
 if __name__ == "__main__":
 
