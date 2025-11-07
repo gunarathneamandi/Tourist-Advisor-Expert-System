@@ -296,7 +296,6 @@ def get_itinerary(duration, month, interests):
         
     print("---" * 10)
 
-# --- 6. RUN THE SCRIPT (no changes) ---
 
 if __name__ == "__main__":
 
