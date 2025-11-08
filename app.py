@@ -6,12 +6,10 @@ import contextlib
 from groq import Groq
 from experta import *
 
-# --- 1. CONFIGURE LLM AGENT (Groq) ---
-# This is now a global placeholder. 
-# The Streamlit UI will configure it on-the-fly.
+
 llm_model = None
 
-# --- 2. DEFINITION OF CUSTOM FACT TYPES (Unchanged) ---
+#Fact Definitions
 
 class UserRequest(Fact):
     """Holds the user's request details."""
@@ -47,10 +45,13 @@ class FindInfo(Fact):
     """A fact to trigger the LLM to find info about an unknown interest."""
     interest = Field(str, mandatory=True)
 
+class PotentialMatch(Fact):
+    """A location that matches an interest, but is not yet in the final plan."""
+    location = Field(str, mandatory=True)
+    type = Field(str, mandatory=True)
+    region = Field(str, mandatory=True)
 
-# --- 3. LLM AGENT FUNCTION (Unchanged) ---
-# This function relies on the global `llm_model` variable, 
-# which our Streamlit app will set.
+
 def call_llm_agent(interest_to_find):
     """
     Calls the LLM to find the location for a specific interest.
@@ -110,7 +111,7 @@ def call_llm_agent(interest_to_find):
         print(f"   > LLM Agent: Error during API call - {e}")
         return None 
 
-# --- 4. EXPERT SYSTEM KNOWLEDGE ENGINE (Unchanged) ---
+#Knowledge Engine
 
 class ItineraryEngine(KnowledgeEngine):
 
@@ -140,19 +141,29 @@ class ItineraryEngine(KnowledgeEngine):
         salience=100
     )
     def determine_bad_weather_region(self, month, interests, region):
-        self.declare(Recommendation(avoid_region=region))
+        # --- THIS IS THE CHANGE ---
+        self.declare(Recommendation(
+            avoid_region=region,
+            reason=f"Avoiding {region} for beaches due to monsoon in {month}."
+        ))
+        
         self.declare(Warning(message=f"Avoiding {region} for beaches due to monsoon in {month}."))
 
     @Rule(
-        UserRequest(month=MATCH.month, interests=MATCH.interests),
+        UserRequest(month=MATCH.month, interests=MATCH.interests), # <-- It matches 'month' here
         Location(type='beach', region=MATCH.region),
         NOT(Recommendation(avoid_region=MATCH.region)),
         TEST(lambda i_list: i_list and 'beach' in i_list, MATCH.interests),
         salience=90
     )
-    def determine_good_weather_region(self, region):
+    def determine_good_weather_region(self, region, month): # <-- Add 'month' to the signature
         if not any(isinstance(f, Recommendation) and f.get('suggest_region') == region for f in self.facts.values()):
-            self.declare(Recommendation(suggest_region=region))
+            
+            self.declare(Recommendation(
+                suggest_region=region,
+                reason=f"Good beach weather in {region} during {month} (not in monsoon)."
+            ))
+           
 
     @Rule(
         UserRequest(interests=MATCH.interests),
@@ -171,14 +182,17 @@ class ItineraryEngine(KnowledgeEngine):
         Location(name=MATCH.name, type=MATCH.type, region=MATCH.region),
         TEST(lambda interests, type: type in interests),
         NOT(Recommendation(avoid_region=MATCH.region)),
-        salience=10
+        salience=10  # This rule now just collects options
     )
-    def match_any_interest(self, interests, name, type, region):
-        self.declare(ItineraryItem(location=name, reason=f"Matches '{type}' interest"))
-    
+    def find_potential_matches(self, interests, name, type, region):
+        """
+        Stage 1: Find all locations that match an interest and are not in a bad region.
+        """
+        self.declare(PotentialMatch(location=name, type=type, region=region))
+
     @Rule(
         UserRequest(duration=MATCH.d),
-        TEST(lambda d: d < 10, MATCH.d), # Only for short trips
+        TEST(lambda d: d < 10, MATCH.d),
         ItineraryItem(location='Sigiriya'), 
         ItineraryItem(location='Arugam Bay')
     )
@@ -198,8 +212,92 @@ class ItineraryEngine(KnowledgeEngine):
         if not any(isinstance(f, Warning) and "many stops" in f.get('message') for f in self.facts.values()):
             self.declare(Warning(message="Plan has many stops for a short trip. Consider focusing on one region."))
 
-# --- 5. MODIFIED HELPER FUNCTION ---
-# This now returns the final engine object and the logs
+
+    # --- NEW RULE: The Itinerary Planner (CORRECTED SYNTAX) ---
+    @Rule(
+        UserRequest(duration=MATCH.d),
+        # Ensure at least one match exists before running
+        EXISTS(PotentialMatch()), 
+        salience=-100  # Run this last
+    )
+    def build_final_itinerary(self, d):
+        """
+        Stage 2: From all potential matches, build a focused itinerary
+        based on duration and weather.
+        """
+        
+        # --- 0a. GATHER ALL MATCHES MANUALLY ---
+        all_matches = []
+        for f in self.facts.values():
+            if isinstance(f, PotentialMatch):
+                # f is a Fact object, which acts like a dictionary
+                all_matches.append(f)
+        
+        if not all_matches:
+            print("   > Planner: Fired but no PotentialMatch facts found.")
+            return
+
+        # --- 0b. GATHER OPTIONAL RECOMMENDATIONS MANUALLY (THE FIX) ---
+        avoid_region = None
+        suggest_region = None
+        for f in self.facts.values():
+            if isinstance(f, Recommendation):
+                if f.get('avoid_region'):
+                    avoid_region = f.get('avoid_region')
+                if f.get('suggest_region'):
+                    suggest_region = f.get('suggest_region')
+                    
+        # --- 1. Define Pacing ---
+        max_stops = max(1, (d // 4) + 1)
+
+        # --- 2. Get Weather Recommendations ---
+        # (This is now just for logging)
+        print(f"   > Planner: Building plan. Max stops: {max_stops}.")
+        if avoid_region:
+            print(f"   > Planner: Avoiding {avoid_region}.")
+        if suggest_region:
+            print(f"   > Planner: Preferring {suggest_region}.")
+            
+        # --- 3. Filter and Sort Matches ---
+        if avoid_region:
+            filtered_matches = [m for m in all_matches if m['region'] != avoid_region]
+        else:
+            filtered_matches = all_matches
+        
+        def sort_key(match):
+            if match['region'] == suggest_region:
+                return 0  # Preferred
+            else:
+                return 1  # Not preferred
+                
+        sorted_matches = sorted(filtered_matches, key=sort_key)
+        
+        # --- 4. Select Final Stops ---
+        final_stops = []
+        locations_added = set() 
+
+        for match in sorted_matches:
+            if len(final_stops) >= max_stops:
+                break
+                
+            if match['location'] not in locations_added:
+                final_stops.append(match)
+                locations_added.add(match['location'])
+
+        # --- 5. Declare Final Itinerary ---
+        if not final_stops:
+            print("   > Planner: Could not find any suitable stops.")
+            return
+
+        print(f"   > Planner: Selected {len(final_stops)} stops.")
+        for stop in final_stops:
+            self.declare(ItineraryItem(
+                location=stop['location'],
+                reason=f"Matches '{stop['type']}' interest in {stop['region']}"
+            ))
+
+
+#Helper Function
 def run_itinerary_logic(duration, month, interests):
     """
     A helper function to run the expert system.
@@ -238,8 +336,7 @@ def run_itinerary_logic(duration, month, interests):
         engine.run()
         print("--- Experta PASS 2: Complete.")
 
-        # The original print statements for results are removed.
-        # We will extract the facts from the returned 'engine' object.
+        
         print("\nEngine run finished.")
         print("---" * 10)
 
@@ -247,11 +344,9 @@ def run_itinerary_logic(duration, month, interests):
     return engine, log_output
 
 
-# --- 6. STREAMLIT UI ---
 
 st.set_page_config(page_title="Sri Lanka Itinerary Bot", layout="wide")
 st.title("🇱🇰 Sri Lanka Itinerary Expert System")
-st.markdown("This app uses an expert system and an LLM (Groq) to plan a trip.")
 
 # --- Sidebar for Inputs ---
 with st.sidebar:
@@ -280,12 +375,12 @@ with st.sidebar:
 
 
 if run_button:
-    # 1. Validate API Key
+    
     if not api_key:
         st.sidebar.error("GROQ API Key is required!")
         st.stop()
 
-    # 2. Configure the global `llm_model` for the `call_llm_agent` function
+    
     try:
         
         client = Groq(api_key=api_key)
@@ -336,6 +431,6 @@ if run_button:
         else:
             st.info("No itinerary items could be generated for these preferences.")
 
-    # 7. Display Logs
+
     with st.expander("Show Full Execution Log"):
         st.code(log_output, language=None)
