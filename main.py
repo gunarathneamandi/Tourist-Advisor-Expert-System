@@ -301,6 +301,6 @@ if __name__ == "__main__":
 
     get_itinerary(
         duration=7,
-        month="August",  # Good weather for Arugam Bay
-        interests=['beach', 'surfing', 'wildlife']
+        month="August",  
+        interests=['rafting']
     )
