@@ -5,6 +5,10 @@ import io
 import contextlib
 from groq import Groq
 from experta import *
+from dotenv import load_dotenv
+
+
+load_dotenv()
 
 
 llm_model = None
@@ -22,6 +26,8 @@ class Location(Fact):
     name = Field(str, mandatory=True)
     type = Field(str, mandatory=True)
     region = Field(str, mandatory=True)
+    priority = Field(int, default=99) # 99 is low priority (e.g., for LLM finds)
+    description = Field(str, default="A popular tourist location.")
     
 class Weather(Fact):
     """Holds the weather details for a location."""
@@ -30,8 +36,11 @@ class Weather(Fact):
 
 class ItineraryItem(Fact):
     """A final recommendation for the user."""
+    stop_number = Field(int, mandatory=True) # e.g., "1", "2", "3"
     location = Field(str, mandatory=True)
     reason = Field(str, mandatory=True)
+    description = Field(str, mandatory=True) 
+
 
 class Warning(Fact):
     """A warning about a potential conflict or issue in the plan."""
@@ -50,6 +59,9 @@ class PotentialMatch(Fact):
     location = Field(str, mandatory=True)
     type = Field(str, mandatory=True)
     region = Field(str, mandatory=True)
+    # --- NEW FIELDS ---
+    priority = Field(int, mandatory=True)
+    description = Field(str, mandatory=True)
 
 
 def call_llm_agent(interest_to_find):
@@ -117,22 +129,105 @@ class ItineraryEngine(KnowledgeEngine):
 
     @DefFacts()
     def _initial_knowledge(self):
-        yield Location(name="Sigiriya", type='history', region='cultural_triangle')
-        yield Location(name='Dambulla', type='history', region='cultural_triangle')
-        yield Location(name='Kandy', type='culture', region='hill_country')
-        yield Location(name='Ella', type='hiking', region='hill_country')
-        yield Location(name='Nuwara Eliya', type='hiking', region='hill_country')
-        yield Location(name='Yala', type='wildlife', region='south_east')
-        yield Location(name='Udawalawe', type='wildlife', region='south')
-        yield Location(name='Mirissa', type='beach', region='south_west')
-        yield Location(name='Unawatuna', type='beach', region='south_west')
+        # === 1. LOCATION FACTS (KNOWLEDGE BASE) ===
+        # This is now structured by the "classic" tourist route.
+        # Lower priority numbers = earlier in the logical trip.
+
+        # --- Priority 1: Ancient Cities (Cultural Triangle) ---
+        yield Location(name="Anuradhapura", type='history', region='cultural_triangle',
+                       priority=1, description="Explore the vast ruins of the first ancient capital.")
+        yield Location(name="Polonnaruwa", type='history', region='cultural_triangle',
+                       priority=2, description="See the well-preserved medieval capital's temples and statues.")
+        yield Location(name="Sigiriya", type='history', region='cultural_triangle',
+                       priority=3, description="Climb the iconic Lion Rock fortress.")
+        yield Location(name='Dambulla', type='history', region='cultural_triangle',
+                       priority=4, description="Visit the impressive Golden Cave Temples.")
+
+        # --- Priority 5: Hill Country ---
+        yield Location(name='Kandy', type='culture', region='hill_country',
+                       priority=5, description="Visit the Temple of the Tooth Relic and cultural shows.")
+        yield Location(name='Nuwara Eliya', type='hiking', region='hill_country',
+                       priority=6, description="Walk through lush tea plantations in 'Little England'.")
+        yield Location(name="Horton Plains", type='hiking', region='hill_country',
+                       priority=7, description="Hike to the stunning 'World's End' viewpoint.")
+        yield Location(name='Ella', type='hiking', region='hill_country',
+                       priority=8, description="See the Nine Arch Bridge and hike Little Adam's Peak.")
+
+        # --- Priority 9: Wildlife (South) ---
+        yield Location(name='Yala', type='wildlife', region='south_east',
+                       priority=9, description="Go on a safari to spot leopards, elephants, and bears.")
+        yield Location(name='Udawalawe', type='wildlife', region='south',
+                       priority=10, description="See large herds of elephants at the National Park.")
+
+        # --- Priority 11: South-West Coast ---
+        yield Location(name='Mirissa', type='beach', region='south_west',
+                       priority=11, description="Go whale watching (in season) or relax on the beach.")
+        yield Location(name='Unawatuna', type='beach', region='south_west',
+                       priority=12, description="A famous palm-lined beach with calm waters for swimming.")
+        yield Location(name="Galle", type='culture', region='south_west',
+                       priority=13, description="Walk the historic ramparts of the UNESCO Dutch Fort.")
+        yield Location(name="Bentota", type='watersports', region='south_west',
+                       priority=14, description="Popular hub for water skiing, jet skiing, and boat tours.")
+        yield Location(name="Hikkaduwa", type='beach', region='south_west',
+                       priority=15, description="Known for its coral reefs (snorkeling) and surf spots.")
+        yield Location(name="Sinharaja", type='hiking', region='south_west',
+                       priority=16, description="Trek in a UNESCO World Heritage rainforest, a biodiversity hotspot.")
+
+        # --- Priority 20+: East Coast (Opposite weather season to South-West) ---
+        yield Location(name='Arugam Bay', type='surfing', region='east_coast',
+                       priority=20, description="A world-famous surfing destination for all levels.")
+        yield Location(name="Trincomalee", type='beach', region='east_coast',
+                       priority=21, description="Visit Koneswaram Temple and enjoy Nilaveli/Uppuveli beaches.")
+        yield Location(name="Pasikudah", type='beach', region='east_coast',
+                       priority=22, description="Famous for its long, shallow coastline, perfect for relaxing.")
         
+        # --- Priority 30+: North (Culturally distinct trip) ---
+        yield Location(name="Jaffna", type='culture', region='north',
+                       priority=30, description="Explore the unique culture, temples, and islands of the Northern peninsula.")
+
+        # === 2. WEATHER FACTS (KNOWLEDGE BASE) ===
+        # This is a more complete model of the two main monsoons.
+
+        # --- South-West Monsoon (Yala) ---
+        # Approx May to September.
+        # BAD for: south_west, south, hill_country
+        # GOOD for: east_coast, north, cultural_triangle
+        yield Weather(bad_region='south_west', month='may')
         yield Weather(bad_region='south_west', month='june')
         yield Weather(bad_region='south_west', month='july')
         yield Weather(bad_region='south_west', month='august')
+        yield Weather(bad_region='south_west', month='september')
+        
+        yield Weather(bad_region='south', month='may')
+        yield Weather(bad_region='south', month='june')
+        yield Weather(bad_region='south', month='july')
+        yield Weather(bad_region='south', month='august')
+
+        yield Weather(bad_region='hill_country', month='may')
+        yield Weather(bad_region='hill_country', month='june')
+        yield Weather(bad_region='hill_country', month='july')
+        yield Weather(bad_region='hill_country', month='august')
+
+
+        # --- North-East Monsoon (Maha) ---
+        # Approx October to February.
+        # BAD for: east_coast, cultural_triangle, north
+        # GOOD for: south_west, south, hill_country
+        yield Weather(bad_region='east_coast', month='october')
+        yield Weather(bad_region='east_coast', month='november')
         yield Weather(bad_region='east_coast', month='december')
         yield Weather(bad_region='east_coast', month='january')
+        yield Weather(bad_region='east_coast', month='february')
+
+        yield Weather(bad_region='cultural_triangle', month='october')
+        yield Weather(bad_region='cultural_triangle', month='november')
         yield Weather(bad_region='cultural_triangle', month='december')
+        yield Weather(bad_region='cultural_triangle', month='january')
+
+        yield Weather(bad_region='north', month='october')
+        yield Weather(bad_region='north', month='november')
+        yield Weather(bad_region='north', month='december')
+        yield Weather(bad_region='north', month='january')
 
     @Rule(
         UserRequest(month=MATCH.month, interests=MATCH.interests),
@@ -179,16 +274,20 @@ class ItineraryEngine(KnowledgeEngine):
 
     @Rule(
         UserRequest(interests=MATCH.interests),
-        Location(name=MATCH.name, type=MATCH.type, region=MATCH.region),
+        # --- Grab the new fields ---
+        Location(name=MATCH.name, type=MATCH.type, region=MATCH.region, 
+                 priority=MATCH.p, description=MATCH.d),
         TEST(lambda interests, type: type in interests),
         NOT(Recommendation(avoid_region=MATCH.region)),
-        salience=10  # This rule now just collects options
+        salience=10
     )
-    def find_potential_matches(self, interests, name, type, region):
+    def find_potential_matches(self, interests, name, type, region, p, d):
         """
         Stage 1: Find all locations that match an interest and are not in a bad region.
         """
-        self.declare(PotentialMatch(location=name, type=type, region=region))
+        # --- Pass the new fields along ---
+        self.declare(PotentialMatch(location=name, type=type, region=region,
+                                    priority=p, description=d))
 
     @Rule(
         UserRequest(duration=MATCH.d),
@@ -213,31 +312,26 @@ class ItineraryEngine(KnowledgeEngine):
             self.declare(Warning(message="Plan has many stops for a short trip. Consider focusing on one region."))
 
 
-    # --- NEW RULE: The Itinerary Planner (CORRECTED SYNTAX) ---
     @Rule(
         UserRequest(duration=MATCH.d),
-        # Ensure at least one match exists before running
         EXISTS(PotentialMatch()), 
-        salience=-100  # Run this last
+        salience=-100
     )
     def build_final_itinerary(self, d):
-        """
-        Stage 2: From all potential matches, build a focused itinerary
-        based on duration and weather.
-        """
+        # ... (sections 0a, 0b, 1, 2 are all the same) ...
+        # --- GATHER MATCHES and GATHER RECOMMENDATIONS ---
         
         # --- 0a. GATHER ALL MATCHES MANUALLY ---
         all_matches = []
         for f in self.facts.values():
             if isinstance(f, PotentialMatch):
-                # f is a Fact object, which acts like a dictionary
                 all_matches.append(f)
         
         if not all_matches:
             print("   > Planner: Fired but no PotentialMatch facts found.")
             return
 
-        # --- 0b. GATHER OPTIONAL RECOMMENDATIONS MANUALLY (THE FIX) ---
+        # --- 0b. GATHER OPTIONAL RECOMMENDATIONS MANUALLY ---
         avoid_region = None
         suggest_region = None
         for f in self.facts.values():
@@ -248,31 +342,36 @@ class ItineraryEngine(KnowledgeEngine):
                     suggest_region = f.get('suggest_region')
                     
         # --- 1. Define Pacing ---
-        max_stops = max(1, (d // 4) + 1)
+        max_stops = max(1, (d // 2) + 1)
 
         # --- 2. Get Weather Recommendations ---
-        # (This is now just for logging)
         print(f"   > Planner: Building plan. Max stops: {max_stops}.")
         if avoid_region:
             print(f"   > Planner: Avoiding {avoid_region}.")
         if suggest_region:
             print(f"   > Planner: Preferring {suggest_region}.")
             
-        # --- 3. Filter and Sort Matches ---
+        # --- 3. Filter and Sort Matches (NEW LOGIC) ---
         if avoid_region:
             filtered_matches = [m for m in all_matches if m['region'] != avoid_region]
         else:
             filtered_matches = all_matches
         
+        # --- THIS IS THE NEW SORTING KEY ---
         def sort_key(match):
+            # The base score is its route priority
+            score = match['priority']
+            
+            # If it's in a "suggested" region, give it a big bonus
+            # (We subtract 100 to make it go to the *front* of the list)
             if match['region'] == suggest_region:
-                return 0  # Preferred
-            else:
-                return 1  # Not preferred
+                score -= 100
+                
+            return score
                 
         sorted_matches = sorted(filtered_matches, key=sort_key)
         
-        # --- 4. Select Final Stops ---
+        # --- 4. Select Final Stops (Unchanged) ---
         final_stops = []
         locations_added = set() 
 
@@ -284,16 +383,23 @@ class ItineraryEngine(KnowledgeEngine):
                 final_stops.append(match)
                 locations_added.add(match['location'])
 
-        # --- 5. Declare Final Itinerary ---
+        # --- 5. Declare Final Itinerary (UPGRADED) ---
         if not final_stops:
             print("   > Planner: Could not find any suitable stops.")
             return
 
         print(f"   > Planner: Selected {len(final_stops)} stops.")
-        for stop in final_stops:
+        
+        # We must re-sort the *final* list by priority to get the stop numbers right.
+        # (This is in case the 'suggest_region' bonus made them out of order)
+        final_sorted_stops = sorted(final_stops, key=lambda m: m['priority'])
+        
+        for i, stop in enumerate(final_sorted_stops):
             self.declare(ItineraryItem(
+                stop_number = i + 1,
                 location=stop['location'],
-                reason=f"Matches '{stop['type']}' interest in {stop['region']}"
+                reason=f"Matches '{stop['type']}' interest",
+                description=stop['description']
             ))
 
 
@@ -350,8 +456,6 @@ st.title("🇱🇰 Sri Lanka Itinerary Expert System")
 
 # --- Sidebar for Inputs ---
 with st.sidebar:
-    st.header("⚙️ Configuration")
-    api_key = st.text_input("Enter your GROQ_API_KEY", type="password")
 
     st.header("✈️ Your Trip Details")
     
@@ -375,6 +479,8 @@ with st.sidebar:
 
 
 if run_button:
+
+    api_key = os.environ.get("GROQ_API_KEY")
     
     if not api_key:
         st.sidebar.error("GROQ API Key is required!")
@@ -414,20 +520,31 @@ if run_button:
         else:
             st.success("No conflicts found. Plan looks good!")
 
-    # 6. Display Itinerary
     with col2:
         st.subheader("🌴 Recommended Itinerary")
-        items = [f for f in engine.facts.values() if isinstance(f, ItineraryItem)]
         
-        if items:
+        # Get all ItineraryItem facts
+        all_items = [f for f in engine.facts.values() if isinstance(f, ItineraryItem)]
+        
+        if all_items:
+            # Sort them by the stop_number to ensure they are in order
+            sorted_items = sorted(all_items, key=lambda x: x.get('stop_number'))
+            
             item_data = []
-            unique_locations = {i.get('location'): i for i in items}
-            for i in unique_locations.values():
+            for i in sorted_items:
                 item_data.append({
+                    "Stop": i.get('stop_number'),
                     "Location": i.get('location'),
+                    "Details": i.get('description'),
                     "Reason": i.get('reason')
                 })
-            st.dataframe(item_data, use_container_width=True)
+            
+            # Set the column order for the dataframe
+            st.dataframe(
+                item_data,
+                column_order=("Stop", "Location", "Details", "Reason"),
+                use_container_width=True
+            )
         else:
             st.info("No itinerary items could be generated for these preferences.")
 
