@@ -402,6 +402,83 @@ class ItineraryEngine(KnowledgeEngine):
                 description=stop['description']
             ))
 
+            
+def call_llm_storyteller(llm_model, duration, month, interests, itinerary_items, warnings):
+    """
+    Calls the LLM to weave the final itinerary into a single, concise paragraph
+    that explains the 'why' of the plan.
+    """
+    if not llm_model:
+        print("LLM not configured. Skipping story generation.")
+        return "Here is your plan:"
+
+    # --- 1. Format the inputs for the prompt ---
+    interests_str = ", ".join(interests)
+    
+    plan_str = ""
+    if not itinerary_items:
+        plan_str = "No specific stops were recommended. This might be because the interests didn't match known locations or were in a bad weather zone."
+    else:
+        for item in itinerary_items:
+            plan_str += f"- {item['Location']} (for {item['Reason']})\n"
+
+    warnings_str = ""
+    if warnings:
+        warnings_str = "Key justifications from our expert system:\n"
+        for w in warnings:
+            warnings_str += f"- {w}\n"
+    else:
+        warnings_str = "Our expert system reviewed the plan and found no conflicts."
+
+    # --- 2. Create the NEW, CONCISE System Prompt ---
+    system_prompt = f"""
+    You are a concise travel expert. Your job is to summarize a travel plan and its key justifications into a **single, short paragraph**.
+
+    **The user's request:**
+    * Duration: {duration} days
+    * Month: {month}
+    * Interests: {interests_str}
+
+    **The Expert System's Plan:**
+    {plan_str}
+
+    **The Expert System's Justifications (Warnings/Notes):**
+    {warnings_str}
+
+    **Your Task:**
+    Write a single, friendly paragraph that summarizes the main stops *and* cleverly weaves in the justifications. 
+    
+    For example, if a warning is 'Avoiding south_west due to monsoon', you must say something like "...so your plan smartly focuses on the Hill Country, as the south-west is rainy in {month}."
+    
+    **CRITICAL RULES:**
+    1.  Respond in a **single paragraph only**.
+    2.  **Do not** use greetings ("Ayubowan!"), sign-offs, or markdown (like **bolding**).
+    3.  Be direct and clear.
+    """
+
+    # --- 3. Call the API ---
+    try:
+        print(f"   > LLM Storyteller: Generating CONCISE narrative...")
+        
+        chat_completion = llm_model.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": "Please summarize this plan in one paragraph."}
+            ],
+            model="llama-3.1-8b-instant",
+            temperature=0.3, # Lower temperature for more factual summary
+            max_tokens=256, # Reduced max tokens for a short paragraph
+        )
+        
+        story = chat_completion.choices[0].message.content
+        print(f"   > LLM Storyteller: Story generated.")
+        return story
+        
+    except Exception as e:
+        print(f"   > LLM Storyteller: Error during API call - {e}")
+        return f"**Error generating story:**\n\n{e}"
+
+
 
 #Helper Function
 def run_itinerary_logic(duration, month, interests):
@@ -485,10 +562,8 @@ if run_button:
     if not api_key:
         st.sidebar.error("GROQ API Key is required!")
         st.stop()
-
     
     try:
-        
         client = Groq(api_key=api_key)
         llm_model = client
         st.sidebar.success("Groq client configured.")
@@ -507,47 +582,67 @@ if run_button:
     with st.spinner("Running expert system... (This may take a moment if LLM is called)"):
         engine, log_output = run_itinerary_logic(duration, month, interests_list)
 
-    st.header("Trip Plan Results")
+    # --- 5. EXTRACT DATA FOR THE STORYTELLER ---
+    
+    # Get all unique warnings
+    warnings = list(set([f.get('message') for f in engine.facts.values() if isinstance(f, Warning)]))
+    
+    # Get all ItineraryItem facts and sort them
+    all_items = [f for f in engine.facts.values() if isinstance(f, ItineraryItem)]
+    sorted_items = sorted(all_items, key=lambda x: x.get('stop_number'))
+    
+    # Format them into a simple list of dicts for the LLM and dataframe
+    item_data_list = []
+    for i in sorted_items:
+        item_data_list.append({
+            "Stop": i.get('stop_number'),
+            "Location": i.get('location'),
+            "Details": i.get('description'),
+            "Reason": i.get('reason')
+        })
+
+    # --- 6. NEW: CALL THE STORYTELLER LLM ---
+    story_output = ""
+    with st.spinner("Crafting your personalized travel story..."):
+        story_output = call_llm_storyteller(
+            llm_model, 
+            duration, 
+            month, 
+            interests_list, 
+            item_data_list,  # Pass the formatted list
+            warnings
+        )
+
+    # --- 7. DISPLAY THE NEW STORY OUTPUT ---
+    st.header("✨ Your Personalized Itinerary")
+    st.markdown(story_output)
+    
+    st.subheader("---") # Add a separator
+
+    # --- 8. DISPLAY THE ORIGINAL, STRUCTURED DATA ---
+    st.header("Analysis & Raw Data")
+    st.markdown("This is the structured data our Expert System used to generate your story.")
+    
     col1, col2 = st.columns(2)
-
-    # 5. Display Warnings
+    
     with col1:
-        st.subheader("⚠️ Warnings")
-        warnings = [f.get('message') for f in engine.facts.values() if isinstance(f, Warning)]
-        if warnings:
-            for w in set(warnings):
-                st.warning(w)
-        else:
-            st.success("No conflicts found. Plan looks good!")
-
-    with col2:
-        st.subheader("🌴 Recommended Itinerary")
-        
-        # Get all ItineraryItem facts
-        all_items = [f for f in engine.facts.values() if isinstance(f, ItineraryItem)]
-        
-        if all_items:
-            # Sort them by the stop_number to ensure they are in order
-            sorted_items = sorted(all_items, key=lambda x: x.get('stop_number'))
-            
-            item_data = []
-            for i in sorted_items:
-                item_data.append({
-                    "Stop": i.get('stop_number'),
-                    "Location": i.get('location'),
-                    "Details": i.get('description'),
-                    "Reason": i.get('reason')
-                })
-            
-            # Set the column order for the dataframe
+        st.subheader("🌴 Structured Plan")
+        if item_data_list:
             st.dataframe(
-                item_data,
+                item_data_list,
                 column_order=("Stop", "Location", "Details", "Reason"),
                 use_container_width=True
             )
         else:
             st.info("No itinerary items could be generated for these preferences.")
-
+    
+    with col2:
+        st.subheader("⚠️ Expert System Notes")
+        if warnings:
+            for w in warnings:
+                st.warning(w)
+        else:
+            st.success("No conflicts found. Plan looks good!")
 
     with st.expander("Show Full Execution Log"):
         st.code(log_output, language=None)
